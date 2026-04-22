@@ -22,6 +22,14 @@ jobs:
           channel: 'stable'
           cache: true
 
+      - name: Create fresh Flutter project
+        run: |
+          flutter create --org com.r4xgamez --project-name ai_terminal_controller tmp_app
+          cp -r tmp_app/android ./android_fresh
+          rm -rf android
+          mv android_fresh android
+          rm -rf tmp_app
+
       - name: Get dependencies
         run: flutter pub get
 
