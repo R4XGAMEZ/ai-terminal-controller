@@ -1,5 +1,5 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -29,63 +29,68 @@ class _WorkspaceScreenState extends ConsumerState<WorkspaceScreen> {
     final manager = ref.read(fileManagerProvider);
     final lastPath = await manager.getLastWorkspace();
     if (lastPath != null && mounted) {
-      ref.read(workspacePathProvider.notifier).state = lastPath;
+      ref.read(workspacePathProvider.notifier).setPath(lastPath);
       await _loadTree(lastPath);
     }
   }
 
   Future<void> _loadTree(String path) async {
-    setState(() {
-      _isLoading = true;
-      _error = null;
-    });
+    setState(() { _isLoading = true; _error = null; });
     try {
       final manager = ref.read(fileManagerProvider);
       final tree = await manager.buildFileTree(path);
-      if (mounted) setState(() => _fileTree = tree);
+      setState(() { _fileTree = tree; _isLoading = false; });
     } catch (e) {
-      if (mounted) setState(() => _error = e.toString());
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
+      setState(() { _error = e.toString(); _isLoading = false; });
     }
   }
 
   Future<void> _pickWorkspace() async {
-    final manager = ref.read(fileManagerProvider);
     try {
+      final manager = ref.read(fileManagerProvider);
       final workspace = await manager.pickWorkspace();
       if (workspace != null && mounted) {
-        ref.read(workspacePathProvider.notifier).state = workspace.path;
+        ref.read(workspacePathProvider.notifier).setPath(workspace.path);
         await _loadTree(workspace.path);
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Workspace: ${workspace.name}'),
-              behavior: SnackBarBehavior.floating,
-            ),
-          );
-        }
       }
     } catch (e) {
       if (mounted) {
-        _showError(e.toString());
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e')),
+        );
       }
     }
   }
 
-  void _showError(String msg) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(msg),
-        backgroundColor: Colors.red,
-        behavior: SnackBarBehavior.floating,
-        action: SnackBarAction(
-          label: 'Settings',
-          onPressed: () => openAppSettings(),
-          textColor: Colors.white,
-        ),
-      ),
-    );
+  Future<void> _toggleNode(FileNode node) async {
+    if (!node.isDirectory) return;
+    if (node.isExpanded) {
+      setState(() {
+        node.isExpanded = false;
+        node.children = [];
+      });
+    } else {
+      final manager = ref.read(fileManagerProvider);
+      final children = await manager.expandNode(node);
+      setState(() {
+        node.isExpanded = true;
+        node.children = children;
+      });
+    }
+  }
+
+  Future<void> _runInTermux(String path) async {
+    final manager = ref.read(fileManagerProvider);
+    final workspacePath = ref.read(workspacePathProvider);
+    try {
+      await manager.runInTermux('cat "$path"', workingDir: workspacePath);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Termux error: $e')),
+        );
+      }
+    }
   }
 
   @override
@@ -97,303 +102,125 @@ class _WorkspaceScreenState extends ConsumerState<WorkspaceScreen> {
       appBar: AppBar(
         title: Text('Workspace', style: GoogleFonts.jetBrainsMono()),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.folder_open),
+            onPressed: _pickWorkspace,
+            tooltip: 'Open Workspace',
+          ),
           if (workspacePath != null)
             IconButton(
               icon: const Icon(Icons.refresh),
-              tooltip: 'Refresh',
               onPressed: () => _loadTree(workspacePath),
+              tooltip: 'Refresh',
             ),
-          IconButton(
-            icon: const Icon(Icons.folder_open_outlined),
-            tooltip: 'Pick workspace folder',
-            onPressed: _pickWorkspace,
-          ),
         ],
       ),
       body: workspacePath == null
-          ? _buildNoWorkspace(colorScheme)
+          ? _buildEmptyState(colorScheme)
           : _isLoading
               ? const Center(child: CircularProgressIndicator())
               : _error != null
-                  ? _buildError(_error!)
-                  : _buildFileTree(workspacePath, colorScheme),
-      floatingActionButton: workspacePath != null
-          ? FloatingActionButton.extended(
-              onPressed: () => _showTermuxDialog(workspacePath),
-              icon: const Icon(Icons.terminal),
-              label: const Text('Open Termux'),
-            )
-          : null,
+                  ? _buildErrorState(_error!)
+                  : _buildFileTree(),
     );
   }
 
-  Widget _buildNoWorkspace(ColorScheme colorScheme) {
+  Widget _buildEmptyState(ColorScheme colorScheme) {
     return Center(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(Icons.folder_off_outlined,
-              size: 72, color: colorScheme.outlineVariant),
+          Icon(Icons.folder_outlined,
+              size: 80, color: colorScheme.onSurface.withOpacity(0.3)),
           const SizedBox(height: 16),
           Text('No Workspace Selected',
               style: GoogleFonts.jetBrainsMono(
                   fontSize: 18, fontWeight: FontWeight.bold)),
           const SizedBox(height: 8),
-          Text('Pick a project folder to browse and manage files.',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: colorScheme.onSurfaceVariant)),
+          Text('Tap the folder icon to open a workspace',
+              style: GoogleFonts.jetBrainsMono(
+                  color: colorScheme.onSurface.withOpacity(0.5))),
           const SizedBox(height: 24),
-          FilledButton.icon(
+          ElevatedButton.icon(
             onPressed: _pickWorkspace,
             icon: const Icon(Icons.folder_open),
-            label: const Text('Select Workspace'),
-          ),
-          const SizedBox(height: 12),
-          OutlinedButton.icon(
-            onPressed: () {
-              ref.read(workspacePathProvider.notifier).state =
-                  '/data/data/com.termux/files/home';
-              _loadTree('/data/data/com.termux/files/home');
-            },
-            icon: const Icon(Icons.home_outlined),
-            label: const Text('Use Termux Home'),
+            label: Text('Open Workspace', style: GoogleFonts.jetBrainsMono()),
           ),
         ],
       ),
     );
   }
 
-  Widget _buildError(String error) {
+  Widget _buildErrorState(String error) {
     return Center(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          const Icon(Icons.error_outline, size: 48, color: Colors.red),
-          const SizedBox(height: 12),
-          Text(error, textAlign: TextAlign.center),
+          const Icon(Icons.error_outline, size: 60, color: Colors.red),
           const SizedBox(height: 16),
-          FilledButton(
-            onPressed: _pickWorkspace,
-            child: const Text('Try Different Folder'),
-          ),
+          Text('Error loading workspace',
+              style: GoogleFonts.jetBrainsMono(fontWeight: FontWeight.bold)),
+          const SizedBox(height: 8),
+          Text(error,
+              style: GoogleFonts.jetBrainsMono(fontSize: 12),
+              textAlign: TextAlign.center),
         ],
       ),
     );
   }
 
-  Widget _buildFileTree(String workspacePath, ColorScheme colorScheme) {
+  Widget _buildFileTree() {
+    final workspacePath = ref.read(workspacePathProvider)!;
     return Column(
       children: [
-        // Workspace path breadcrumb
         Container(
-          width: double.infinity,
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          color: colorScheme.surfaceContainerHighest,
+          color: Theme.of(context).colorScheme.surfaceContainerHighest,
           child: Row(
             children: [
-              const Icon(Icons.folder, size: 14),
-              const SizedBox(width: 6),
+              const Icon(Icons.folder, size: 16),
+              const SizedBox(width: 8),
               Expanded(
                 child: Text(
                   workspacePath,
                   style: GoogleFonts.jetBrainsMono(fontSize: 11),
                   overflow: TextOverflow.ellipsis,
-                  maxLines: 1,
                 ),
               ),
             ],
           ),
         ),
-
-        // File tree
         Expanded(
           child: _fileTree.isEmpty
               ? Center(
                   child: Text('Empty folder',
-                      style: TextStyle(color: colorScheme.onSurfaceVariant)))
+                      style: GoogleFonts.jetBrainsMono()),
+                )
               : ListView.builder(
                   itemCount: _fileTree.length,
-                  itemBuilder: (ctx, i) => _FileNodeTile(
-                    node: _fileTree[i],
-                    depth: 0,
-                    onTap: (node) => _onNodeTap(node),
-                    workspacePath: workspacePath,
-                  ),
+                  itemBuilder: (context, index) =>
+                      _buildNode(_fileTree[index], 0),
                 ),
         ),
       ],
     );
   }
 
-  Future<void> _onNodeTap(FileNode node) async {
-    if (!node.isDirectory) {
-      // Open file for viewing
-      await _showFileContent(node);
-      return;
-    }
-
-    // Toggle expand/collapse
-    setState(() {
-      node.isExpanded = !node.isExpanded;
-    });
-
-    if (node.isExpanded && node.children.isEmpty) {
-      final manager = ref.read(fileManagerProvider);
-      final children = await manager.expandNode(node);
-      setState(() {
-        node.children = children;
-      });
-    }
-  }
-
-  Future<void> _showFileContent(FileNode node) async {
-    if (!node.isCode) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Binary files cannot be previewed'),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-      return;
-    }
-
-    final manager = ref.read(fileManagerProvider);
-    try {
-      final content = await manager.readFile(node.path);
-      if (!mounted) return;
-      showModalBottomSheet(
-        context: context,
-        isScrollControlled: true,
-        useSafeArea: true,
-        builder: (ctx) => DraggableScrollableSheet(
-          expand: false,
-          initialChildSize: 0.85,
-          builder: (_, scrollCtrl) => Column(
-            children: [
-              ListTile(
-                leading: Text(node.icon),
-                title: Text(node.name,
-                    style: GoogleFonts.jetBrainsMono(fontSize: 14)),
-                trailing: IconButton(
-                  icon: const Icon(Icons.close),
-                  onPressed: () => Navigator.pop(ctx),
-                ),
-              ),
-              const Divider(height: 1),
-              Expanded(
-                child: SingleChildScrollView(
-                  controller: scrollCtrl,
-                  child: Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: SelectableText(
-                      content,
-                      style: GoogleFonts.jetBrainsMono(fontSize: 12,
-                          height: 1.5),
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      );
-    } catch (e) {
-      if (mounted) _showError('Cannot read file: $e');
-    }
-  }
-
-  void _showTermuxDialog(String workspacePath) {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Open in Termux'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('Run this command in Termux to navigate here:'),
-            const SizedBox(height: 8),
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: Colors.black87,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: SelectableText(
-                'cd "$workspacePath"',
-                style: GoogleFonts.jetBrainsMono(
-                    color: Colors.greenAccent, fontSize: 13),
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel'),
-          ),
-          FilledButton.icon(
-            icon: const Icon(Icons.terminal, size: 16),
-            label: const Text('Open Termux'),
-            onPressed: () async {
-              Navigator.pop(ctx);
-              final manager = ref.read(fileManagerProvider);
-              try {
-                await manager.runInTermux('echo "Workspace ready"',
-                    workingDir: workspacePath);
-              } catch (e) {
-                if (mounted) _showError(e.toString());
-              }
-            },
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// ─── File Node Tile (recursive) ───────────────────────────────────────────────
-
-class _FileNodeTile extends StatelessWidget {
-  final FileNode node;
-  final int depth;
-  final Function(FileNode) onTap;
-  final String workspacePath;
-
-  const _FileNodeTile({
-    required this.node,
-    required this.depth,
-    required this.onTap,
-    required this.workspacePath,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-
+  Widget _buildNode(FileNode node, int depth) {
     return Column(
       children: [
         InkWell(
-          onTap: () => onTap(node),
+          onTap: () => _toggleNode(node),
+          onLongPress: () {
+            HapticFeedback.mediumImpact();
+            _showFileOptions(node);
+          },
           child: Padding(
             padding: EdgeInsets.only(
-              left: 16.0 + depth * 20,
-              right: 16,
-              top: 6,
-              bottom: 6,
-            ),
+                left: 16.0 + depth * 16, right: 8, top: 4, bottom: 4),
             child: Row(
               children: [
-                if (node.isDirectory)
-                  Icon(
-                    node.isExpanded
-                        ? Icons.expand_more
-                        : Icons.chevron_right,
-                    size: 16,
-                    color: colorScheme.onSurfaceVariant,
-                  ),
-                const SizedBox(width: 4),
-                Text(node.icon, style: const TextStyle(fontSize: 14)),
+                Text(node.icon, style: const TextStyle(fontSize: 16)),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
@@ -402,32 +229,52 @@ class _FileNodeTile extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
-                if (!node.isDirectory)
-                  Text(
-                    _formatSize(node.size),
-                    style: TextStyle(
-                        fontSize: 10,
-                        color: colorScheme.onSurfaceVariant),
+                if (node.isDirectory)
+                  Icon(
+                    node.isExpanded
+                        ? Icons.expand_less
+                        : Icons.expand_more,
+                    size: 16,
                   ),
               ],
             ),
           ),
         ),
-        // Recursive children
-        if (node.isExpanded && node.children.isNotEmpty)
-          ...node.children.map((child) => _FileNodeTile(
-                node: child,
-                depth: depth + 1,
-                onTap: onTap,
-                workspacePath: workspacePath,
-              )),
+        if (node.isExpanded)
+          ...node.children.map((child) => _buildNode(child, depth + 1)),
+        const Divider(height: 1, thickness: 0.3),
       ],
     );
   }
 
-  String _formatSize(int bytes) {
-    if (bytes < 1024) return '${bytes}B';
-    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(0)}K';
-    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)}M';
+  void _showFileOptions(FileNode node) {
+    showModalBottomSheet(
+      context: context,
+      builder: (ctx) => Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ListTile(
+            leading: const Icon(Icons.copy),
+            title: Text('Copy Path', style: GoogleFonts.jetBrainsMono()),
+            onTap: () {
+              Clipboard.setData(ClipboardData(text: node.path));
+              Navigator.pop(ctx);
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Path copied!')),
+              );
+            },
+          ),
+          if (!node.isDirectory)
+            ListTile(
+              leading: const Icon(Icons.terminal),
+              title: Text('Open in Termux', style: GoogleFonts.jetBrainsMono()),
+              onTap: () {
+                Navigator.pop(ctx);
+                _runInTermux(node.path);
+              },
+            ),
+        ],
+      ),
+    );
   }
 }

@@ -52,7 +52,7 @@ class ApiService {
     }
   }
 
-  Stream<String> streamResponse(List<ChatMessage> messages) {
+  Stream<String> sendMessageStream(List<ChatMessage> messages) {
     switch (_provider) {
       case AIProvider.openai:
       case AIProvider.groq:
@@ -67,7 +67,6 @@ class ApiService {
   }
 
   Stream<String> _streamOpenAI(List<ChatMessage> messages) async* {
-    final controller = StreamController<String>();
     try {
       final response = await _dio.post(
         '${_provider.baseUrl}/chat/completions',
@@ -82,11 +81,12 @@ class ApiService {
           'max_tokens': 4096,
         },
       );
-
       final stream = response.data.stream as Stream<List<int>>;
-      await for (final chunk in stream.transform(const Utf8Decoder()).transform(const LineSplitter())) {
-        if (chunk.startsWith('data: ')) {
-          final data = chunk.substring(6).trim();
+      await for (final line in stream
+          .transform(const Utf8Decoder())
+          .transform(const LineSplitter())) {
+        if (line.startsWith('data: ')) {
+          final data = line.substring(6).trim();
           if (data == '[DONE]') break;
           try {
             final json = jsonDecode(data);
@@ -118,11 +118,12 @@ class ApiService {
           'messages': messages.map((m) => m.toApiMap()).toList(),
         },
       );
-
       final stream = response.data.stream as Stream<List<int>>;
-      await for (final chunk in stream.transform(const Utf8Decoder()).transform(const LineSplitter())) {
-        if (chunk.startsWith('data: ')) {
-          final data = chunk.substring(6).trim();
+      await for (final line in stream
+          .transform(const Utf8Decoder())
+          .transform(const LineSplitter())) {
+        if (line.startsWith('data: ')) {
+          final data = line.substring(6).trim();
           try {
             final json = jsonDecode(data);
             if (json['type'] == 'content_block_delta') {
@@ -141,7 +142,10 @@ class ApiService {
     try {
       final prompt = messages.map((m) {
         final role = m.role == MessageRole.user ? 'user' : 'model';
-        return {'role': role, 'parts': [{'text': m.content}]};
+        return {
+          'role': role,
+          'parts': [{'text': m.content}]
+        };
       }).toList();
 
       final response = await _dio.post(
@@ -179,12 +183,13 @@ class ApiService {
           'stream': true,
         },
       );
-
       final stream = response.data.stream as Stream<List<int>>;
-      await for (final chunk in stream.transform(const Utf8Decoder()).transform(const LineSplitter())) {
-        if (chunk.trim().isEmpty) continue;
+      await for (final line in stream
+          .transform(const Utf8Decoder())
+          .transform(const LineSplitter())) {
+        if (line.trim().isEmpty) continue;
         try {
-          final json = jsonDecode(chunk);
+          final json = jsonDecode(line);
           final text = json['message']?['content'] as String?;
           if (text != null) yield text;
           if (json['done'] == true) break;

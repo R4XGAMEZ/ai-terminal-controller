@@ -1,9 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
-
 import '../providers/app_providers.dart';
-import '../services/api_service.dart';
 
 class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({super.key});
@@ -13,93 +11,122 @@ class SettingsScreen extends ConsumerStatefulWidget {
 }
 
 class _SettingsScreenState extends ConsumerState<SettingsScreen> {
-  late final TextEditingController _apiKeyController;
-  bool _obscureKey = true;
+  late TextEditingController _apiKeyController;
+  late TextEditingController _ollamaHostController;
+  bool _obscureApiKey = true;
 
   @override
   void initState() {
     super.initState();
     final settings = ref.read(settingsProvider);
     _apiKeyController = TextEditingController(text: settings.apiKey);
+    _ollamaHostController = TextEditingController(text: settings.ollamaHost);
   }
 
   @override
   void dispose() {
     _apiKeyController.dispose();
+    _ollamaHostController.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final settings = ref.watch(settingsProvider);
-    final colorScheme = Theme.of(context).colorScheme;
     final themeMode = ref.watch(themeModeProvider);
+    final colorScheme = Theme.of(context).colorScheme;
+
+    final providers = ['openai', 'anthropic', 'gemini', 'groq', 'ollama'];
+    final models = providerModels[settings.selectedProvider] ?? [];
 
     return Scaffold(
       appBar: AppBar(
         title: Text('Settings', style: GoogleFonts.jetBrainsMono()),
+        actions: [
+          IconButton(
+            icon: Icon(themeMode == ThemeMode.dark
+                ? Icons.light_mode
+                : Icons.dark_mode),
+            onPressed: () => ref.read(themeModeProvider.notifier).toggle(),
+          ),
+        ],
       ),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          // ── AI Provider Section ──────────────────────────────────────────
-          _SectionHeader(title: '🤖 AI Provider'),
-          const SizedBox(height: 8),
+          // Provider Selection
           Card(
             child: Padding(
               padding: const EdgeInsets.all(16),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('Provider', style: Theme.of(context).textTheme.labelLarge),
-                  const SizedBox(height: 8),
-                  DropdownButtonFormField<AIProvider>(
-                    value: settings.provider,
-                    decoration: InputDecoration(
-                      border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12)),
-                      contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 8),
+                  Text('AI Provider',
+                      style: GoogleFonts.jetBrainsMono(
+                          fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<String>(
+                    value: settings.selectedProvider,
+                    decoration: const InputDecoration(
+                      border: OutlineInputBorder(),
+                      contentPadding:
+                          EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                     ),
-                    items: AIProvider.values
+                    items: providers
                         .map((p) => DropdownMenuItem(
                               value: p,
-                              child: Text(p.label),
+                              child: Text(p.toUpperCase(),
+                                  style: GoogleFonts.jetBrainsMono()),
                             ))
                         .toList(),
-                    onChanged: (p) {
-                      if (p != null) {
+                    onChanged: (value) {
+                      if (value != null) {
                         ref
                             .read(settingsProvider.notifier)
-                            .updateProvider(p);
+                            .updateProvider(value);
                       }
                     },
                   ),
-                  const SizedBox(height: 16),
-                  Text('Model', style: Theme.of(context).textTheme.labelLarge),
-                  const SizedBox(height: 8),
+                ],
+              ),
+            ),
+          ),
+
+          const SizedBox(height: 12),
+
+          // Model Selection
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Model',
+                      style: GoogleFonts.jetBrainsMono(
+                          fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 12),
                   DropdownButtonFormField<String>(
-                    value: settings.provider.availableModels
-                            .contains(settings.selectedModel)
+                    value: models.contains(settings.selectedModel)
                         ? settings.selectedModel
-                        : settings.provider.availableModels.first,
-                    decoration: InputDecoration(
-                      border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12)),
-                      contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 8),
+                        : models.first,
+                    decoration: const InputDecoration(
+                      border: OutlineInputBorder(),
+                      contentPadding:
+                          EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                     ),
-                    items: settings.provider.availableModels
+                    items: models
                         .map((m) => DropdownMenuItem(
                               value: m,
                               child: Text(m,
                                   style: GoogleFonts.jetBrainsMono(
-                                      fontSize: 13)),
+                                      fontSize: 12)),
                             ))
                         .toList(),
-                    onChanged: (m) {
-                      if (m != null) {
-                        ref.read(settingsProvider.notifier).updateModel(m);
+                    onChanged: (value) {
+                      if (value != null) {
+                        ref
+                            .read(settingsProvider.notifier)
+                            .updateModel(value);
                       }
                     },
                   ),
@@ -108,202 +135,104 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             ),
           ),
 
-          const SizedBox(height: 16),
+          const SizedBox(height: 12),
 
-          // ── API Key Section ──────────────────────────────────────────────
-          _SectionHeader(title: '🔑 API Key'),
-          const SizedBox(height: 8),
+          // API Key
           Card(
             child: Padding(
               padding: const EdgeInsets.all(16),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  TextField(
+                  Text('API Key',
+                      style: GoogleFonts.jetBrainsMono(
+                          fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 12),
+                  TextFormField(
                     controller: _apiKeyController,
-                    obscureText: _obscureKey,
+                    obscureText: _obscureApiKey,
                     style: GoogleFonts.jetBrainsMono(fontSize: 13),
                     decoration: InputDecoration(
-                      hintText: settings.provider == AIProvider.anthropic
-                          ? 'sk-ant-...'
-                          : settings.provider == AIProvider.openai
-                              ? 'sk-...'
-                              : 'Enter API key',
-                      hintStyle:
-                          GoogleFonts.jetBrainsMono(fontSize: 13),
-                      border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12)),
-                      contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 12),
+                      border: const OutlineInputBorder(),
+                      hintText: 'Enter your API key...',
                       suffixIcon: IconButton(
-                        icon: Icon(_obscureKey
-                            ? Icons.visibility_outlined
-                            : Icons.visibility_off_outlined),
+                        icon: Icon(_obscureApiKey
+                            ? Icons.visibility
+                            : Icons.visibility_off),
                         onPressed: () =>
-                            setState(() => _obscureKey = !_obscureKey),
+                            setState(() => _obscureApiKey = !_obscureApiKey),
                       ),
                     ),
-                    onChanged: (v) {
+                    onChanged: (value) {
                       ref
                           .read(settingsProvider.notifier)
-                          .updateApiKey(v.trim());
+                          .updateApiKey(value);
                     },
-                  ),
-                  const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      Icon(
-                        settings.apiKey.isNotEmpty
-                            ? Icons.check_circle_outline
-                            : Icons.warning_amber_outlined,
-                        size: 14,
-                        color: settings.apiKey.isNotEmpty
-                            ? Colors.green
-                            : colorScheme.error,
-                      ),
-                      const SizedBox(width: 6),
-                      Text(
-                        settings.apiKey.isNotEmpty
-                            ? 'API key configured'
-                            : 'API key required to use chat',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: settings.apiKey.isNotEmpty
-                              ? Colors.green
-                              : colorScheme.error,
-                        ),
-                      ),
-                    ],
                   ),
                 ],
               ),
             ),
           ),
 
-          const SizedBox(height: 16),
+          const SizedBox(height: 12),
 
-          // ── Appearance Section ───────────────────────────────────────────
-          _SectionHeader(title: '🎨 Appearance'),
-          const SizedBox(height: 8),
-          Card(
-            child: Column(
-              children: [
-                RadioListTile<ThemeMode>(
-                  title: const Text('System Default'),
-                  subtitle: const Text('Follows device theme'),
-                  value: ThemeMode.system,
-                  groupValue: themeMode,
-                  onChanged: (v) {
-                    if (v != null) {
-                      ref.read(themeModeProvider.notifier).setMode(v);
-                    }
-                  },
-                ),
-                RadioListTile<ThemeMode>(
-                  title: const Text('Light Mode'),
-                  value: ThemeMode.light,
-                  groupValue: themeMode,
-                  onChanged: (v) {
-                    if (v != null) {
-                      ref.read(themeModeProvider.notifier).setMode(v);
-                    }
-                  },
-                ),
-                RadioListTile<ThemeMode>(
-                  title: const Text('Dark Mode'),
-                  value: ThemeMode.dark,
-                  groupValue: themeMode,
-                  onChanged: (v) {
-                    if (v != null) {
-                      ref.read(themeModeProvider.notifier).setMode(v);
-                    }
-                  },
-                ),
-              ],
-            ),
-          ),
-
-          const SizedBox(height: 16),
-
-          // ── Danger Zone ──────────────────────────────────────────────────
-          _SectionHeader(title: '⚠️ Danger Zone'),
-          const SizedBox(height: 8),
-          Card(
-            child: ListTile(
-              leading:
-                  const Icon(Icons.delete_forever, color: Colors.red),
-              title: const Text('Clear All Data',
-                  style: TextStyle(color: Colors.red)),
-              subtitle: const Text('Remove API keys, settings, and chat history'),
-              onTap: () {
-                showDialog(
-                  context: context,
-                  builder: (ctx) => AlertDialog(
-                    title: const Text('Clear All Data?'),
-                    content: const Text(
-                        'This will remove all settings including your API key. This cannot be undone.'),
-                    actions: [
-                      TextButton(
-                          onPressed: () => Navigator.pop(ctx),
-                          child: const Text('Cancel')),
-                      FilledButton(
-                        style: FilledButton.styleFrom(
-                            backgroundColor: Colors.red),
-                        onPressed: () {
-                          ref
-                              .read(settingsProvider.notifier)
-                              .update(const AppSettings());
-                          ref
-                              .read(chatHistoryProvider.notifier)
-                              .clear();
-                          _apiKeyController.clear();
-                          Navigator.pop(ctx);
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text('All data cleared'),
-                              behavior: SnackBarBehavior.floating,
-                            ),
-                          );
-                        },
-                        child: const Text('Clear All'),
+          // Ollama Host (show only when ollama selected)
+          if (settings.selectedProvider == 'ollama')
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Ollama Host',
+                        style: GoogleFonts.jetBrainsMono(
+                            fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      controller: _ollamaHostController,
+                      style: GoogleFonts.jetBrainsMono(fontSize: 13),
+                      decoration: const InputDecoration(
+                        border: OutlineInputBorder(),
+                        hintText: 'http://localhost:11434',
                       ),
-                    ],
-                  ),
-                );
-              },
+                      onChanged: (value) {
+                        ref
+                            .read(settingsProvider.notifier)
+                            .updateOllamaHost(value);
+                      },
+                    ),
+                  ],
+                ),
+              ),
             ),
-          ),
 
           const SizedBox(height: 24),
+
+          // Clear Chat Button
+          OutlinedButton.icon(
+            onPressed: () {
+              ref.read(chatMessagesProvider.notifier).clearMessages();
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Chat cleared!')),
+              );
+            },
+            icon: const Icon(Icons.delete_outline),
+            label: Text('Clear Chat History',
+                style: GoogleFonts.jetBrainsMono()),
+          ),
+
+          const SizedBox(height: 32),
+
           Center(
             child: Text(
               'AI Terminal Controller v1.0.0',
-              style: TextStyle(
-                color: colorScheme.onSurfaceVariant,
-                fontSize: 12,
+              style: GoogleFonts.jetBrainsMono(
+                fontSize: 11,
+                color: colorScheme.onSurface.withOpacity(0.4),
               ),
             ),
           ),
-          const SizedBox(height: 8),
         ],
-      ),
-    );
-  }
-}
-
-class _SectionHeader extends StatelessWidget {
-  final String title;
-  const _SectionHeader({required this.title});
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(left: 4, bottom: 2),
-      child: Text(
-        title,
-        style: Theme.of(context).textTheme.titleSmall?.copyWith(
-              fontWeight: FontWeight.bold,
-            ),
       ),
     );
   }

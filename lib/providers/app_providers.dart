@@ -1,48 +1,33 @@
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-
-import '../services/api_service.dart';
 import '../models/chat_message.dart';
 
-// ─── SharedPreferences Provider ───────────────────────────────────────────────
+// ─── Shared Preferences ───────────────────────────────────────────────────────
 
-final sharedPreferencesProvider = Provider<SharedPreferences>(
-  (_) => throw UnimplementedError('Override in main()'),
-);
+final sharedPreferencesProvider = Provider<SharedPreferences>((ref) {
+  throw UnimplementedError('SharedPreferences not initialized');
+});
 
 // ─── Theme ────────────────────────────────────────────────────────────────────
 
-final themeModeProvider = StateNotifierProvider<ThemeModeNotifier, ThemeMode>(
-  (ref) => ThemeModeNotifier(ref.read(sharedPreferencesProvider)),
-);
+final themeModeProvider =
+    StateNotifierProvider<ThemeModeNotifier, ThemeMode>((ref) {
+  final prefs = ref.watch(sharedPreferencesProvider);
+  return ThemeModeNotifier(prefs);
+});
 
 class ThemeModeNotifier extends StateNotifier<ThemeMode> {
   final SharedPreferences _prefs;
-  static const _key = 'theme_mode';
-
   ThemeModeNotifier(this._prefs)
-      : super(_modeFromString(_prefs.getString(_key)));
-
-  static ThemeMode _modeFromString(String? value) {
-    switch (value) {
-      case 'light':
-        return ThemeMode.light;
-      case 'dark':
-        return ThemeMode.dark;
-      default:
-        return ThemeMode.system;
-    }
-  }
-
-  void setMode(ThemeMode mode) {
-    state = mode;
-    _prefs.setString(_key, mode.name);
-  }
+      : super(_prefs.getBool('dark_mode') == true
+            ? ThemeMode.dark
+            : ThemeMode.light);
 
   void toggle() {
-    setMode(state == ThemeMode.dark ? ThemeMode.light : ThemeMode.dark);
+    final isDark = state == ThemeMode.dark;
+    state = isDark ? ThemeMode.light : ThemeMode.dark;
+    _prefs.setBool('dark_mode', !isDark);
   }
 }
 
@@ -50,145 +35,158 @@ class ThemeModeNotifier extends StateNotifier<ThemeMode> {
 
 class AppSettings {
   final String apiKey;
+  final String selectedProvider;
   final String selectedModel;
-  final AIProvider provider;
-  final double temperature;
-  final int maxTokens;
-  final bool streamResponses;
-  final bool autoRunCommands;
-  final String? systemPromptOverride;
+  final String ollamaHost;
 
   const AppSettings({
     this.apiKey = '',
-    this.selectedModel = 'claude-sonnet-4-5',
-    this.provider = AIProvider.anthropic,
-    this.temperature = 0.7,
-    this.maxTokens = 4096,
-    this.streamResponses = true,
-    this.autoRunCommands = false,
-    this.systemPromptOverride,
+    this.selectedProvider = 'anthropic',
+    this.selectedModel = 'claude-sonnet-4-20250514',
+    this.ollamaHost = 'http://localhost:11434',
   });
 
   AppSettings copyWith({
     String? apiKey,
+    String? selectedProvider,
     String? selectedModel,
-    AIProvider? provider,
-    double? temperature,
-    int? maxTokens,
-    bool? streamResponses,
-    bool? autoRunCommands,
-    String? systemPromptOverride,
-  }) =>
-      AppSettings(
-        apiKey: apiKey ?? this.apiKey,
-        selectedModel: selectedModel ?? this.selectedModel,
-        provider: provider ?? this.provider,
-        temperature: temperature ?? this.temperature,
-        maxTokens: maxTokens ?? this.maxTokens,
-        streamResponses: streamResponses ?? this.streamResponses,
-        autoRunCommands: autoRunCommands ?? this.autoRunCommands,
-        systemPromptOverride: systemPromptOverride ?? this.systemPromptOverride,
-      );
-
-  Map<String, dynamic> toJson() => {
-        'apiKey': apiKey,
-        'selectedModel': selectedModel,
-        'provider': provider.index,
-        'temperature': temperature,
-        'maxTokens': maxTokens,
-        'streamResponses': streamResponses,
-        'autoRunCommands': autoRunCommands,
-        'systemPromptOverride': systemPromptOverride,
-      };
-
-  factory AppSettings.fromJson(Map<String, dynamic> json) => AppSettings(
-        apiKey: json['apiKey'] ?? '',
-        selectedModel: json['selectedModel'] ?? 'claude-sonnet-4-5',
-        provider: AIProvider.values[json['provider'] ?? 1],
-        temperature: (json['temperature'] ?? 0.7).toDouble(),
-        maxTokens: json['maxTokens'] ?? 4096,
-        streamResponses: json['streamResponses'] ?? true,
-        autoRunCommands: json['autoRunCommands'] ?? false,
-        systemPromptOverride: json['systemPromptOverride'],
-      );
+    String? ollamaHost,
+  }) {
+    return AppSettings(
+      apiKey: apiKey ?? this.apiKey,
+      selectedProvider: selectedProvider ?? this.selectedProvider,
+      selectedModel: selectedModel ?? this.selectedModel,
+      ollamaHost: ollamaHost ?? this.ollamaHost,
+    );
+  }
 }
 
-final settingsProvider = StateNotifierProvider<SettingsNotifier, AppSettings>(
-  (ref) => SettingsNotifier(ref.read(sharedPreferencesProvider)),
-);
+final settingsProvider =
+    StateNotifierProvider<SettingsNotifier, AppSettings>((ref) {
+  final prefs = ref.watch(sharedPreferencesProvider);
+  return SettingsNotifier(prefs);
+});
 
 class SettingsNotifier extends StateNotifier<AppSettings> {
   final SharedPreferences _prefs;
-  static const _key = 'app_settings';
 
-  SettingsNotifier(this._prefs) : super(_load(_prefs));
+  SettingsNotifier(this._prefs)
+      : super(AppSettings(
+          apiKey: _prefs.getString('api_key') ?? '',
+          selectedProvider: _prefs.getString('provider') ?? 'anthropic',
+          selectedModel:
+              _prefs.getString('model') ?? 'claude-sonnet-4-20250514',
+          ollamaHost:
+              _prefs.getString('ollama_host') ?? 'http://localhost:11434',
+        ));
 
-  static AppSettings _load(SharedPreferences prefs) {
-    final json = prefs.getString(_key);
-    if (json == null) return const AppSettings();
-    try {
-      return AppSettings.fromJson(jsonDecode(json));
-    } catch (_) {
-      return const AppSettings();
+  Future<void> updateApiKey(String key) async {
+    state = state.copyWith(apiKey: key);
+    await _prefs.setString('api_key', key);
+  }
+
+  Future<void> updateProvider(String provider) async {
+    final defaultModel = _defaultModelForProvider(provider);
+    state = state.copyWith(selectedProvider: provider, selectedModel: defaultModel);
+    await _prefs.setString('provider', provider);
+    await _prefs.setString('model', defaultModel);
+  }
+
+  Future<void> updateModel(String model) async {
+    state = state.copyWith(selectedModel: model);
+    await _prefs.setString('model', model);
+  }
+
+  Future<void> updateOllamaHost(String host) async {
+    state = state.copyWith(ollamaHost: host);
+    await _prefs.setString('ollama_host', host);
+  }
+
+  String _defaultModelForProvider(String provider) {
+    switch (provider) {
+      case 'openai': return 'gpt-4o';
+      case 'anthropic': return 'claude-sonnet-4-20250514';
+      case 'gemini': return 'gemini-1.5-pro';
+      case 'groq': return 'llama-3.3-70b-versatile';
+      case 'ollama': return 'llama3';
+      default: return 'claude-sonnet-4-20250514';
     }
-  }
-
-  void update(AppSettings settings) {
-    state = settings;
-    _prefs.setString(_key, jsonEncode(settings.toJson()));
-  }
-
-  void updateApiKey(String key) => update(state.copyWith(apiKey: key));
-  void updateModel(String model) => update(state.copyWith(selectedModel: model));
-  void updateProvider(AIProvider provider) {
-    final models = provider.availableModels;
-    update(state.copyWith(
-      provider: provider,
-      selectedModel: models.isNotEmpty ? models.first : '',
-    ));
   }
 }
 
-// ─── Chat History ─────────────────────────────────────────────────────────────
+// ─── Provider Models Map ──────────────────────────────────────────────────────
 
-final chatHistoryProvider =
-    StateNotifierProvider<ChatHistoryNotifier, List<ChatMessage>>(
-  (ref) => ChatHistoryNotifier(),
-);
+const providerModels = <String, List<String>>{
+  'openai': ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo'],
+  'anthropic': [
+    'claude-opus-4-20250514',
+    'claude-sonnet-4-20250514',
+    'claude-haiku-4-20250514',
+    'claude-3-5-sonnet-20241022',
+    'claude-3-haiku-20240307',
+  ],
+  'gemini': ['gemini-1.5-pro', 'gemini-1.5-flash', 'gemini-2.0-flash'],
+  'groq': [
+    'llama-3.3-70b-versatile',
+    'llama-3.1-8b-instant',
+    'mixtral-8x7b-32768',
+    'gemma2-9b-it',
+  ],
+  'ollama': ['llama3', 'mistral', 'codellama', 'phi3', 'gemma2'],
+};
 
-class ChatHistoryNotifier extends StateNotifier<List<ChatMessage>> {
-  ChatHistoryNotifier() : super([]);
+// ─── Chat Messages ────────────────────────────────────────────────────────────
+
+final chatMessagesProvider =
+    StateNotifierProvider<ChatMessagesNotifier, List<ChatMessage>>((ref) {
+  return ChatMessagesNotifier();
+});
+
+class ChatMessagesNotifier extends StateNotifier<List<ChatMessage>> {
+  ChatMessagesNotifier() : super([]);
 
   void addMessage(ChatMessage message) {
     state = [...state, message];
   }
 
-  void updateLastAssistantMessage(String content) {
-    if (state.isEmpty) return;
-    final last = state.last;
-    if (last.role == MessageRole.assistant) {
-      state = [
-        ...state.sublist(0, state.length - 1),
-        last.copyWith(content: content),
-      ];
-    }
+  void updateMessage(String id, ChatMessage updated) {
+    state = state.map((m) => m.id == id ? updated : m).toList();
   }
 
-  void appendToLastMessage(String delta) {
-    if (state.isEmpty) return;
-    final last = state.last;
-    if (last.role == MessageRole.assistant) {
-      state = [
-        ...state.sublist(0, state.length - 1),
-        last.copyWith(content: last.content + delta),
-      ];
-    }
+  void appendToMessage(String id, String chunk) {
+    state = state.map((m) {
+      if (m.id == id) return m.copyWith(content: m.content + chunk);
+      return m;
+    }).toList();
   }
 
-  void clear() => state = [];
+  void clearMessages() {
+    state = [];
+  }
+}
 
-  void removeMessage(String id) {
-    state = state.where((m) => m.id != id).toList();
+// ─── Workspace ────────────────────────────────────────────────────────────────
+
+final workspacePathProvider =
+    StateNotifierProvider<WorkspacePathNotifier, String?>((ref) {
+  final prefs = ref.watch(sharedPreferencesProvider);
+  return WorkspacePathNotifier(prefs);
+});
+
+class WorkspacePathNotifier extends StateNotifier<String?> {
+  final SharedPreferences _prefs;
+
+  WorkspacePathNotifier(this._prefs)
+      : super(_prefs.getString('workspace_path'));
+
+  Future<void> setPath(String path) async {
+    state = path;
+    await _prefs.setString('workspace_path', path);
+  }
+
+  void clearPath() {
+    state = null;
+    _prefs.remove('workspace_path');
   }
 }
 
