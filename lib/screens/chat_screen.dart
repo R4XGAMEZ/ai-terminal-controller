@@ -20,16 +20,14 @@ class ChatScreen extends ConsumerStatefulWidget {
 }
 
 class _ChatScreenState extends ConsumerState<ChatScreen> {
-  final _controller = TextEditingController();
-  final _scrollController = ScrollController();
-  final _focusNode = FocusNode();
-  bool _isComposing = false;
+  final TextEditingController _inputController = TextEditingController();
+  final ScrollController _scrollController = ScrollController();
+  bool _isStreaming = false;
 
   @override
   void dispose() {
-    _controller.dispose();
+    _inputController.dispose();
     _scrollController.dispose();
-    _focusNode.dispose();
     super.dispose();
   }
 
@@ -46,177 +44,107 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   }
 
   Future<void> _sendMessage() async {
-    final text = _controller.text.trim();
-    if (text.isEmpty) return;
+    final text = _inputController.text.trim();
+    if (text.isEmpty || _isStreaming) return;
 
-    final apiService = ref.read(apiServiceProvider);
-    if (apiService == null) {
-      _showNoApiKeyDialog();
-      return;
-    }
+    _inputController.clear();
 
-    _controller.clear();
-    setState(() => _isComposing = false);
+    final userMessage = ChatMessage(
+      id: DateTime.now().millisecondsSinceEpoch.toString(),
+      role: MessageRole.user,
+      content: text,
+      timestamp: DateTime.now(),
+      status: MessageStatus.sent,
+    );
 
-    // Add user message
-    final userMsg = ChatMessage(role: MessageRole.user, content: text);
-    ref.read(chatHistoryProvider.notifier).addMessage(userMsg);
-
-    // Add placeholder assistant message
-    final assistantMsg =
-        ChatMessage(role: MessageRole.assistant, content: '');
-    ref.read(chatHistoryProvider.notifier).addMessage(assistantMsg);
-    ref.read(isStreamingProvider.notifier).state = true;
-
+    ref.read(chatMessagesProvider.notifier).addMessage(userMessage);
     _scrollToBottom();
 
-    try {
-      final history = ref.read(chatHistoryProvider)
-          .where((m) => m.role != MessageRole.system)
-          .toList()
-        ..removeLast(); // Remove empty assistant placeholder
+    final assistantId = '${DateTime.now().millisecondsSinceEpoch}_ai';
+    final assistantMessage = ChatMessage(
+      id: assistantId,
+      role: MessageRole.assistant,
+      content: '',
+      timestamp: DateTime.now(),
+      status: MessageStatus.streaming,
+    );
 
-      await for (final delta in apiService.sendMessageStream(history)) {
-        ref.read(chatHistoryProvider.notifier).appendToLastMessage(delta);
+    ref.read(chatMessagesProvider.notifier).addMessage(assistantMessage);
+    setState(() => _isStreaming = true);
+
+    try {
+      final apiService = ref.read(apiServiceProvider);
+      final messages = ref.read(chatMessagesProvider)
+          .where((m) => m.status != MessageStatus.streaming)
+          .toList();
+
+      final stream = apiService.sendMessageStream(messages);
+
+      await for (final chunk in stream) {
+        ref.read(chatMessagesProvider.notifier).appendToMessage(assistantId, chunk);
         _scrollToBottom();
       }
+
+      final currentMessages = ref.read(chatMessagesProvider);
+      final finalMsg = currentMessages.firstWhere((m) => m.id == assistantId);
+      ref.read(chatMessagesProvider.notifier).updateMessage(
+        assistantId,
+        finalMsg.copyWith(status: MessageStatus.sent),
+      );
     } catch (e) {
-      ref.read(chatHistoryProvider.notifier).updateLastAssistantMessage(
-            '❌ Error: ${e.toString().replaceAll('APIException: ', '')}',
-          );
+      final currentMessages = ref.read(chatMessagesProvider);
+      final errMsg = currentMessages.firstWhere(
+        (m) => m.id == assistantId,
+        orElse: () => assistantMessage,
+      );
+      ref.read(chatMessagesProvider.notifier).updateMessage(
+        assistantId,
+        errMsg.copyWith(
+          status: MessageStatus.error,
+          errorText: e.toString(),
+        ),
+      );
     } finally {
-      ref.read(isStreamingProvider.notifier).state = false;
+      setState(() => _isStreaming = false);
       _scrollToBottom();
     }
   }
 
-  void _showNoApiKeyDialog() {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('API Key Missing'),
-        content: const Text(
-            'Please configure your API key in Settings before chatting.'),
-        actions: [
-          TextButton(
-            onPressed: () {
-              Navigator.pop(ctx);
-              Navigator.pushNamed(ctx, '/settings');
-            },
-            child: const Text('Go to Settings'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel'),
-          ),
-        ],
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
-    final messages = ref.watch(chatHistoryProvider);
-    final isStreaming = ref.watch(isStreamingProvider);
+    final messages = ref.watch(chatMessagesProvider);
     final colorScheme = Theme.of(context).colorScheme;
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
     return Scaffold(
       appBar: AppBar(
-        title: Row(
-          children: [
-            Container(
-              width: 32,
-              height: 32,
-              decoration: BoxDecoration(
-                color: colorScheme.primaryContainer,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Icon(Icons.terminal,
-                  size: 18, color: colorScheme.onPrimaryContainer),
-            ),
-            const SizedBox(width: 10),
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('AI Terminal',
-                    style: GoogleFonts.jetBrainsMono(
-                        fontSize: 15, fontWeight: FontWeight.bold)),
-                Consumer(builder: (ctx, ref, _) {
-                  final settings = ref.watch(settingsProvider);
-                  return Text(
-                    settings.selectedModel,
-                    style: TextStyle(
-                      fontSize: 10,
-                      color: colorScheme.onSurfaceVariant,
-                      fontFamily: 'monospace',
-                    ),
-                  );
-                }),
-              ],
-            ),
-          ],
-        ),
+        title: Text('AI Terminal', style: GoogleFonts.jetBrainsMono()),
         actions: [
-          if (isStreaming)
-            Padding(
-              padding: const EdgeInsets.only(right: 8),
-              child: SizedBox(
-                width: 18,
-                height: 18,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  color: colorScheme.primary,
-                ),
-              ),
-            ),
           IconButton(
-            icon: const Icon(Icons.delete_sweep_outlined),
-            tooltip: 'Clear chat',
+            icon: const Icon(Icons.delete_outline),
             onPressed: () {
-              showDialog(
-                context: context,
-                builder: (ctx) => AlertDialog(
-                  title: const Text('Clear Chat'),
-                  content: const Text('Delete all messages?'),
-                  actions: [
-                    TextButton(
-                        onPressed: () => Navigator.pop(ctx),
-                        child: const Text('Cancel')),
-                    FilledButton(
-                      onPressed: () {
-                        ref.read(chatHistoryProvider.notifier).clear();
-                        Navigator.pop(ctx);
-                      },
-                      child: const Text('Clear'),
-                    ),
-                  ],
-                ),
-              );
+              ref.read(chatMessagesProvider.notifier).clearMessages();
             },
+            tooltip: 'Clear Chat',
           ),
         ],
       ),
       body: Column(
         children: [
-          // Messages List
           Expanded(
             child: messages.isEmpty
                 ? _buildEmptyState(colorScheme)
                 : ListView.builder(
                     controller: _scrollController,
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 12, vertical: 8),
+                    padding: const EdgeInsets.all(12),
                     itemCount: messages.length,
-                    itemBuilder: (ctx, i) => _MessageBubble(
-                      message: messages[i],
-                      isDark: isDark,
-                    ),
+                    itemBuilder: (context, index) {
+                      return _buildMessageBubble(
+                          messages[index], isDark, colorScheme);
+                    },
                   ),
           ),
-
-          // Input Area
-          _buildInputArea(colorScheme, isStreaming),
+          _buildInputBar(colorScheme),
         ],
       ),
     );
@@ -228,400 +156,303 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           Icon(Icons.terminal,
-              size: 64, color: colorScheme.outlineVariant),
+              size: 80, color: colorScheme.primary.withOpacity(0.3)),
           const SizedBox(height: 16),
-          Text('AI Terminal Controller',
-              style: GoogleFonts.jetBrainsMono(
-                  fontSize: 18, fontWeight: FontWeight.bold)),
+          Text(
+            'AI Terminal Controller',
+            style: GoogleFonts.jetBrainsMono(
+              fontSize: 20,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
           const SizedBox(height: 8),
-          Text('Ask me to run commands, manage files,\nor automate tasks in Termux.',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: colorScheme.onSurfaceVariant)),
-          const SizedBox(height: 24),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            alignment: WrapAlignment.center,
-            children: [
-              _SuggestionChip(
-                text: '📋 List files',
-                onTap: () {
-                  _controller.text = 'Show me how to list all files in Termux home directory';
-                  setState(() => _isComposing = true);
-                },
-              ),
-              _SuggestionChip(
-                text: '🐍 Run Python',
-                onTap: () {
-                  _controller.text = 'How do I run a Python script in Termux?';
-                  setState(() => _isComposing = true);
-                },
-              ),
-              _SuggestionChip(
-                text: '📦 Install pkg',
-                onTap: () {
-                  _controller.text = 'How to install git using Termux package manager?';
-                  setState(() => _isComposing = true);
-                },
-              ),
-            ],
+          Text(
+            'Ask me anything or request code...',
+            style: GoogleFonts.jetBrainsMono(
+              color: colorScheme.onSurface.withOpacity(0.5),
+            ),
           ),
         ],
       ),
     );
   }
 
-  Widget _buildInputArea(ColorScheme colorScheme, bool isStreaming) {
-    return SafeArea(
-      child: Container(
-        padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
-        decoration: BoxDecoration(
-          color: colorScheme.surface,
-          border: Border(
-            top: BorderSide(color: colorScheme.outlineVariant, width: 0.5),
-          ),
-        ),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: [
-            Expanded(
-              child: TextField(
-                controller: _controller,
-                focusNode: _focusNode,
-                maxLines: 5,
-                minLines: 1,
-                keyboardType: TextInputType.multiline,
-                textInputAction: TextInputAction.newline,
-                style: GoogleFonts.jetBrainsMono(fontSize: 14),
-                decoration: InputDecoration(
-                  hintText: 'Ask about commands, files, scripts...',
-                  hintStyle: GoogleFonts.jetBrainsMono(
-                    fontSize: 14,
-                    color: colorScheme.onSurfaceVariant,
-                  ),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(16),
-                    borderSide: BorderSide.none,
-                  ),
-                  filled: true,
-                  fillColor: colorScheme.surfaceContainerHighest,
-                  contentPadding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 10,
-                  ),
-                ),
-                onChanged: (v) =>
-                    setState(() => _isComposing = v.trim().isNotEmpty),
-              ),
-            ),
-            const SizedBox(width: 8),
-            AnimatedSwitcher(
-              duration: const Duration(milliseconds: 200),
-              child: isStreaming
-                  ? IconButton(
-                      key: const ValueKey('stop'),
-                      icon: const Icon(Icons.stop_circle_outlined),
-                      onPressed: () => ref
-                          .read(isStreamingProvider.notifier)
-                          .state = false,
-                      tooltip: 'Stop',
-                    )
-                  : FilledButton(
-                      key: const ValueKey('send'),
-                      onPressed: _isComposing ? _sendMessage : null,
-                      style: FilledButton.styleFrom(
-                        shape: const CircleBorder(),
-                        padding: const EdgeInsets.all(12),
-                      ),
-                      child: const Icon(Icons.send_rounded, size: 20),
-                    ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-// ─── Message Bubble ────────────────────────────────────────────────────────────
-
-class _MessageBubble extends ConsumerWidget {
-  final ChatMessage message;
-  final bool isDark;
-
-  const _MessageBubble({required this.message, required this.isDark});
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final colorScheme = Theme.of(context).colorScheme;
+  Widget _buildMessageBubble(
+      ChatMessage message, bool isDark, ColorScheme colorScheme) {
     final isUser = message.role == MessageRole.user;
 
+    return Align(
+      alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
+      child: Container(
+        margin: const EdgeInsets.symmetric(vertical: 4),
+        constraints: BoxConstraints(
+          maxWidth: MediaQuery.of(context).size.width * 0.85,
+        ),
+        decoration: BoxDecoration(
+          color: isUser
+              ? colorScheme.primaryContainer
+              : colorScheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: message.status == MessageStatus.error
+            ? _buildErrorMessage(message, colorScheme)
+            : _buildMessageContent(message, isDark, colorScheme),
+      ),
+    );
+  }
+
+  Widget _buildErrorMessage(ChatMessage message, ColorScheme colorScheme) {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Row(
-        mainAxisAlignment:
-            isUser ? MainAxisAlignment.end : MainAxisAlignment.start,
+      padding: const EdgeInsets.all(12),
+      child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (!isUser) ...[
-            CircleAvatar(
-              radius: 14,
-              backgroundColor: colorScheme.primaryContainer,
-              child: Icon(Icons.smart_toy_outlined,
-                  size: 14, color: colorScheme.onPrimaryContainer),
-            ),
-            const SizedBox(width: 8),
-          ],
-          Flexible(
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-              decoration: BoxDecoration(
-                color: isUser
-                    ? colorScheme.primary
-                    : colorScheme.surfaceContainerHigh,
-                borderRadius: BorderRadius.only(
-                  topLeft: const Radius.circular(18),
-                  topRight: const Radius.circular(18),
-                  bottomLeft: Radius.circular(isUser ? 18 : 4),
-                  bottomRight: Radius.circular(isUser ? 4 : 18),
-                ),
-              ),
-              child: isUser
-                  ? Text(
-                      message.content,
-                      style: TextStyle(
-                        color: colorScheme.onPrimary,
-                        fontFamily: 'JetBrainsMono',
-                        fontSize: 14,
-                      ),
-                    )
-                  : Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        _MarkdownWithCode(
-                          content: message.content,
-                          isDark: isDark,
-                          codeBlocks: message.codeBlocks,
-                        ),
-                      ],
-                    ),
-            ),
+          Row(
+            children: [
+              const Icon(Icons.error_outline, color: Colors.red, size: 16),
+              const SizedBox(width: 8),
+              Text('Error', style: GoogleFonts.jetBrainsMono(color: Colors.red)),
+            ],
           ),
-          if (isUser) ...[
-            const SizedBox(width: 8),
-            CircleAvatar(
-              radius: 14,
-              backgroundColor: colorScheme.secondaryContainer,
-              child: Icon(Icons.person_outline,
-                  size: 14, color: colorScheme.onSecondaryContainer),
-            ),
-          ],
+          const SizedBox(height: 4),
+          Text(
+            message.errorText ?? 'Unknown error',
+            style: GoogleFonts.jetBrainsMono(fontSize: 12),
+          ),
         ],
       ),
     );
   }
-}
 
-// ─── Markdown with Code Highlighting ──────────────────────────────────────────
-
-class _MarkdownWithCode extends ConsumerWidget {
-  final String content;
-  final bool isDark;
-  final List<CodeBlock> codeBlocks;
-
-  const _MarkdownWithCode({
-    required this.content,
-    required this.isDark,
-    required this.codeBlocks,
-  });
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final colorScheme = Theme.of(context).colorScheme;
-
-    return MarkdownBody(
-      data: content,
-      selectable: true,
-      builders: {
-        'code': _CodeBlockBuilder(isDark: isDark, ref: ref),
-      },
-      styleSheet: MarkdownStyleSheet(
-        p: TextStyle(
-          color: colorScheme.onSurface,
-          fontSize: 14,
-          height: 1.5,
+  Widget _buildMessageContent(
+      ChatMessage message, bool isDark, ColorScheme colorScheme) {
+    if (message.status == MessageStatus.streaming && message.content.isEmpty) {
+      return const Padding(
+        padding: EdgeInsets.all(12),
+        child: SizedBox(
+          width: 20,
+          height: 20,
+          child: CircularProgressIndicator(strokeWidth: 2),
         ),
-        code: GoogleFonts.jetBrainsMono(
-          backgroundColor: colorScheme.surfaceContainerHighest,
-          fontSize: 12,
-        ),
+      );
+    }
+
+    // Parse content for code blocks
+    final parts = _parseContent(message.content);
+
+    return Padding(
+      padding: const EdgeInsets.all(12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: parts.map((part) {
+          if (part['type'] == 'code') {
+            return _buildCodeBlock(
+              part['code'] ?? '',
+              part['language'] ?? '',
+              isDark,
+              colorScheme,
+            );
+          } else {
+            return MarkdownBody(
+              data: part['text'] ?? '',
+              styleSheet: MarkdownStyleSheet(
+                p: GoogleFonts.jetBrainsMono(fontSize: 13),
+                code: GoogleFonts.jetBrainsMono(fontSize: 12),
+              ),
+            );
+          }
+        }).toList(),
       ),
     );
   }
-}
 
-class _CodeBlockBuilder extends MarkdownElementBuilder {
-  final bool isDark;
-  final WidgetRef ref;
+  List<Map<String, String>> _parseContent(String content) {
+    final parts = <Map<String, String>>[];
+    final codeBlockRegex = RegExp(r'```(\w*)\n?([\s\S]*?)```');
+    int lastEnd = 0;
 
-  _CodeBlockBuilder({required this.isDark, required this.ref});
+    for (final match in codeBlockRegex.allMatches(content)) {
+      if (match.start > lastEnd) {
+        parts.add({
+          'type': 'text',
+          'text': content.substring(lastEnd, match.start),
+        });
+      }
+      parts.add({
+        'type': 'code',
+        'language': match.group(1) ?? '',
+        'code': match.group(2) ?? '',
+      });
+      lastEnd = match.end;
+    }
 
-  @override
-  Widget? visitElementAfter(element, preferredStyle) {
-    final code = element.textContent;
-    final lang = element.attributes['class']
-            ?.replaceFirst('language-', '') ??
-        'text';
-    final isBash = lang == 'bash' || lang == 'sh';
+    if (lastEnd < content.length) {
+      parts.add({'type': 'text', 'text': content.substring(lastEnd)});
+    }
 
-    return _CodeCard(code: code, language: lang, isDark: isDark, isBash: isBash);
+    if (parts.isEmpty) {
+      parts.add({'type': 'text', 'text': content});
+    }
+
+    return parts;
   }
-}
 
-class _CodeCard extends ConsumerWidget {
-  final String code;
-  final String language;
-  final bool isDark;
-  final bool isBash;
-
-  const _CodeCard({
-    required this.code,
-    required this.language,
-    required this.isDark,
-    required this.isBash,
-  });
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final colorScheme = Theme.of(context).colorScheme;
+  Widget _buildCodeBlock(
+      String code, String language, bool isDark, ColorScheme colorScheme) {
+    final isBash = language == 'bash' || language == 'sh' || language == 'shell';
 
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 8),
       decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: colorScheme.outlineVariant),
+        color: isDark ? const Color(0xFF1E1E1E) : const Color(0xFFF5F5F5),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: colorScheme.outline.withOpacity(0.3)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Code header
+          // Header
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
             decoration: BoxDecoration(
-              color: isDark
-                  ? const Color(0xFF1E1E1E)
-                  : colorScheme.surfaceContainerHighest,
+              color: isDark ? const Color(0xFF2D2D2D) : const Color(0xFFE8E8E8),
               borderRadius:
-                  const BorderRadius.vertical(top: Radius.circular(11)),
+                  const BorderRadius.vertical(top: Radius.circular(8)),
             ),
             child: Row(
               children: [
-                Icon(Icons.code, size: 14, color: colorScheme.primary),
-                const SizedBox(width: 6),
                 Text(
                   language.isEmpty ? 'code' : language,
                   style: GoogleFonts.jetBrainsMono(
                     fontSize: 11,
-                    color: colorScheme.onSurfaceVariant,
+                    color: colorScheme.onSurface.withOpacity(0.6),
                   ),
                 ),
                 const Spacer(),
                 // Copy button
-                GestureDetector(
+                InkWell(
                   onTap: () {
                     Clipboard.setData(ClipboardData(text: code));
                     ScaffoldMessenger.of(context).showSnackBar(
                       const SnackBar(
-                        content: Text('Copied to clipboard'),
+                        content: Text('Code copied!'),
                         duration: Duration(seconds: 1),
-                        behavior: SnackBarBehavior.floating,
                       ),
                     );
                   },
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 4),
-                    child: Icon(Icons.copy, size: 14,
-                        color: colorScheme.onSurfaceVariant),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.copy, size: 14),
+                      const SizedBox(width: 4),
+                      Text('Copy',
+                          style: GoogleFonts.jetBrainsMono(fontSize: 11)),
+                    ],
                   ),
                 ),
-                // Run in Termux button
+                // Run in Termux button (only for bash)
                 if (isBash) ...[
-                  const SizedBox(width: 8),
-                  GestureDetector(
-                    onTap: () => _runInTermux(context, ref),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 8, vertical: 2),
-                      decoration: BoxDecoration(
-                        color: Colors.green.withOpacity(0.15),
-                        borderRadius: BorderRadius.circular(4),
-                        border: Border.all(
-                            color: Colors.green.withOpacity(0.3)),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Icon(Icons.play_arrow,
-                              size: 12, color: Colors.green),
-                          const SizedBox(width: 3),
-                          Text('Termux',
-                              style: GoogleFonts.jetBrainsMono(
-                                  fontSize: 10, color: Colors.green)),
-                        ],
-                      ),
+                  const SizedBox(width: 12),
+                  InkWell(
+                    onTap: () => _runCodeInTermux(code),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.terminal, size: 14,
+                            color: Colors.green),
+                        const SizedBox(width: 4),
+                        Text('Run in Termux',
+                            style: GoogleFonts.jetBrainsMono(
+                                fontSize: 11, color: Colors.green)),
+                      ],
                     ),
                   ),
                 ],
               ],
             ),
           ),
-
           // Code content
-          HighlightView(
-            code,
-            language: language.isEmpty ? 'plaintext' : language,
-            theme: isDark ? atomOneDarkTheme : githubTheme,
-            padding: const EdgeInsets.all(12),
-            textStyle: GoogleFonts.jetBrainsMono(fontSize: 12, height: 1.5),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: language.isNotEmpty
+                  ? HighlightView(
+                      code,
+                      language: language,
+                      theme: isDark ? atomOneDarkTheme : githubTheme,
+                      textStyle: GoogleFonts.jetBrainsMono(fontSize: 12),
+                    )
+                  : Text(
+                      code,
+                      style: GoogleFonts.jetBrainsMono(fontSize: 12),
+                    ),
+            ),
           ),
         ],
       ),
     );
   }
 
-  Future<void> _runInTermux(BuildContext context, WidgetRef ref) async {
+  Future<void> _runCodeInTermux(String code) async {
     final fileManager = ref.read(fileManagerProvider);
     final workspace = ref.read(workspacePathProvider);
-
     try {
       await fileManager.runInTermux(code, workingDir: workspace);
     } catch (e) {
-      if (context.mounted) {
+      if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Termux error: $e'),
-            backgroundColor: Colors.red,
-            behavior: SnackBarBehavior.floating,
-          ),
+          SnackBar(content: Text('Termux error: $e')),
         );
       }
     }
   }
-}
 
-// ─── Suggestion Chip ──────────────────────────────────────────────────────────
-
-class _SuggestionChip extends StatelessWidget {
-  final String text;
-  final VoidCallback onTap;
-
-  const _SuggestionChip({required this.text, required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    return ActionChip(
-      label: Text(text, style: const TextStyle(fontSize: 13)),
-      onPressed: onTap,
+  Widget _buildInputBar(ColorScheme colorScheme) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: colorScheme.surface,
+        border: Border(
+          top: BorderSide(color: colorScheme.outline.withOpacity(0.2)),
+        ),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: TextField(
+              controller: _inputController,
+              style: GoogleFonts.jetBrainsMono(fontSize: 13),
+              maxLines: 4,
+              minLines: 1,
+              textInputAction: TextInputAction.newline,
+              decoration: InputDecoration(
+                hintText: 'Ask AI anything...',
+                hintStyle: GoogleFonts.jetBrainsMono(fontSize: 13),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 16, vertical: 10),
+              ),
+              onSubmitted: (_) => _sendMessage(),
+            ),
+          ),
+          const SizedBox(width: 8),
+          _isStreaming
+              ? const SizedBox(
+                  width: 44,
+                  height: 44,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : FilledButton(
+                  onPressed: _sendMessage,
+                  style: FilledButton.styleFrom(
+                    shape: const CircleBorder(),
+                    padding: const EdgeInsets.all(12),
+                  ),
+                  child: const Icon(Icons.send, size: 20),
+                ),
+        ],
+      ),
     );
   }
 }
