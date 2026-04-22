@@ -6,326 +6,197 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/chat_message.dart';
 import '../providers/app_providers.dart';
 
-// ─── Supported AI Providers ───────────────────────────────────────────────────
-
 enum AIProvider { openai, anthropic, gemini, groq, ollama }
 
 extension AIProviderExt on AIProvider {
   String get label {
     switch (this) {
-      case AIProvider.openai:
-        return 'OpenAI';
-      case AIProvider.anthropic:
-        return 'Anthropic';
-      case AIProvider.gemini:
-        return 'Google Gemini';
-      case AIProvider.groq:
-        return 'Groq';
-      case AIProvider.ollama:
-        return 'Ollama (Local)';
+      case AIProvider.openai: return 'OpenAI';
+      case AIProvider.anthropic: return 'Anthropic';
+      case AIProvider.gemini: return 'Gemini';
+      case AIProvider.groq: return 'Groq';
+      case AIProvider.ollama: return 'Ollama';
     }
   }
 
   String get baseUrl {
     switch (this) {
-      case AIProvider.openai:
-        return 'https://api.openai.com/v1';
-      case AIProvider.anthropic:
-        return 'https://api.anthropic.com/v1';
-      case AIProvider.gemini:
-        return 'https://generativelanguage.googleapis.com/v1beta';
-      case AIProvider.groq:
-        return 'https://api.groq.com/openai/v1';
-      case AIProvider.ollama:
-        return 'http://localhost:11434/api';
-    }
-  }
-
-  List<String> get availableModels {
-    switch (this) {
-      case AIProvider.openai:
-        return ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo'];
-      case AIProvider.anthropic:
-        return [
-          'claude-opus-4-5',
-          'claude-sonnet-4-5',
-          'claude-haiku-4-5',
-          'claude-3-5-sonnet-20241022',
-        ];
-      case AIProvider.gemini:
-        return [
-          'gemini-1.5-pro',
-          'gemini-1.5-flash',
-          'gemini-2.0-flash-exp',
-        ];
-      case AIProvider.groq:
-        return [
-          'llama-3.3-70b-versatile',
-          'llama-3.1-8b-instant',
-          'mixtral-8x7b-32768',
-        ];
-      case AIProvider.ollama:
-        return ['llama3', 'codellama', 'mistral', 'phi3'];
+      case AIProvider.openai: return 'https://api.openai.com/v1';
+      case AIProvider.anthropic: return 'https://api.anthropic.com/v1';
+      case AIProvider.gemini: return 'https://generativelanguage.googleapis.com/v1beta';
+      case AIProvider.groq: return 'https://api.groq.com/openai/v1';
+      case AIProvider.ollama: return 'http://localhost:11434/api';
     }
   }
 }
 
-// ─── API Service ──────────────────────────────────────────────────────────────
-
-class APIService {
+class ApiService {
   final Dio _dio;
-  final String apiKey;
-  final String model;
-  final AIProvider provider;
+  final AppSettings _settings;
 
-  static const String _systemPrompt = '''
-You are an AI Terminal Controller integrated with Termux on Android.
-Your job:
-- Help users manage files, run shell commands, and automate tasks via Termux.
-- Always wrap shell commands inside triple backtick code blocks with "bash" language tag.
-- Explain what each command does before suggesting it.
-- Be security-conscious: warn about dangerous commands (rm -rf, sudo, etc.).
-- Format responses clearly with markdown.
-- When suggesting file paths, always use Termux-compatible paths (/data/data/com.termux/files/home/).
-''';
+  ApiService(this._settings)
+      : _dio = Dio(BaseOptions(
+          connectTimeout: const Duration(seconds: 30),
+          receiveTimeout: const Duration(seconds: 120),
+          headers: {'Content-Type': 'application/json'},
+        ));
 
-  APIService({
-    required this.apiKey,
-    required this.model,
-    required this.provider,
-  }) : _dio = Dio(
-          BaseOptions(
-            connectTimeout: const Duration(seconds: 30),
-            receiveTimeout: const Duration(seconds: 60),
-            headers: _buildHeaders(provider, apiKey),
-          ),
-        );
+  AIProvider get _provider {
+    switch (_settings.selectedProvider) {
+      case 'openai': return AIProvider.openai;
+      case 'anthropic': return AIProvider.anthropic;
+      case 'gemini': return AIProvider.gemini;
+      case 'groq': return AIProvider.groq;
+      case 'ollama': return AIProvider.ollama;
+      default: return AIProvider.anthropic;
+    }
+  }
 
-  static Map<String, String> _buildHeaders(
-      AIProvider provider, String apiKey) {
-    switch (provider) {
-      case AIProvider.anthropic:
-        return {
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-          'content-type': 'application/json',
-        };
+  Stream<String> streamResponse(List<ChatMessage> messages) {
+    switch (_provider) {
       case AIProvider.openai:
       case AIProvider.groq:
-        return {
-          'Authorization': 'Bearer $apiKey',
-          'content-type': 'application/json',
-        };
+        return _streamOpenAI(messages);
+      case AIProvider.anthropic:
+        return _streamAnthropic(messages);
       case AIProvider.gemini:
-        return {'content-type': 'application/json'};
+        return _streamGemini(messages);
       case AIProvider.ollama:
-        return {'content-type': 'application/json'};
+        return _streamOllama(messages);
     }
   }
 
-  // ── Streaming Chat Completion ────────────────────────────────────────────────
-
-  Stream<String> sendMessageStream(List<ChatMessage> history) async* {
+  Stream<String> _streamOpenAI(List<ChatMessage> messages) async* {
+    final controller = StreamController<String>();
     try {
-      switch (provider) {
-        case AIProvider.openai:
-        case AIProvider.groq:
-          yield* _openAIStream(history);
-          break;
-        case AIProvider.anthropic:
-          yield* _anthropicStream(history);
-          break;
-        case AIProvider.gemini:
-          yield* _geminiStream(history);
-          break;
-        case AIProvider.ollama:
-          yield* _ollamaStream(history);
-          break;
+      final response = await _dio.post(
+        '${_provider.baseUrl}/chat/completions',
+        options: Options(
+          headers: {'Authorization': 'Bearer ${_settings.apiKey}'},
+          responseType: ResponseType.stream,
+        ),
+        data: {
+          'model': _settings.selectedModel,
+          'messages': messages.map((m) => m.toApiMap()).toList(),
+          'stream': true,
+          'max_tokens': 4096,
+        },
+      );
+
+      final stream = response.data.stream as Stream<List<int>>;
+      await for (final chunk in stream.transform(const Utf8Decoder()).transform(const LineSplitter())) {
+        if (chunk.startsWith('data: ')) {
+          final data = chunk.substring(6).trim();
+          if (data == '[DONE]') break;
+          try {
+            final json = jsonDecode(data);
+            final content = json['choices']?[0]?['delta']?['content'] as String?;
+            if (content != null) yield content;
+          } catch (_) {}
+        }
       }
-    } on DioException catch (e) {
-      final msg = _parseDioError(e);
-      throw APIException(msg);
+    } catch (e) {
+      throw Exception('OpenAI/Groq API error: $e');
     }
   }
 
-  // ── OpenAI / Groq ─────────────────────────────────────────────────────────
+  Stream<String> _streamAnthropic(List<ChatMessage> messages) async* {
+    try {
+      final response = await _dio.post(
+        '${AIProvider.anthropic.baseUrl}/messages',
+        options: Options(
+          headers: {
+            'x-api-key': _settings.apiKey,
+            'anthropic-version': '2023-06-01',
+          },
+          responseType: ResponseType.stream,
+        ),
+        data: {
+          'model': _settings.selectedModel,
+          'max_tokens': 4096,
+          'stream': true,
+          'messages': messages.map((m) => m.toApiMap()).toList(),
+        },
+      );
 
-  Stream<String> _openAIStream(List<ChatMessage> history) async* {
-    final url = '${provider.baseUrl}/chat/completions';
-    final messages = [
-      {'role': 'system', 'content': _systemPrompt},
-      ...history.map((m) => {'role': m.role.name, 'content': m.content}),
-    ];
-
-    final response = await _dio.post<ResponseBody>(
-      url,
-      data: jsonEncode({
-        'model': model,
-        'messages': messages,
-        'stream': true,
-        'temperature': 0.7,
-        'max_tokens': 4096,
-      }),
-      options: Options(responseType: ResponseType.stream),
-    );
-
-    final stream = response.data!.stream
-        .transform(const Utf8Decoder())
-        .transform(const LineSplitter());
-
-    await for (final line in stream) {
-      if (line.startsWith('data: ')) {
-        final data = line.substring(6).trim();
-        if (data == '[DONE]') break;
-        try {
-          final json = jsonDecode(data);
-          final delta = json['choices']?[0]?['delta']?['content'];
-          if (delta != null && delta is String) yield delta;
-        } catch (_) {}
+      final stream = response.data.stream as Stream<List<int>>;
+      await for (final chunk in stream.transform(const Utf8Decoder()).transform(const LineSplitter())) {
+        if (chunk.startsWith('data: ')) {
+          final data = chunk.substring(6).trim();
+          try {
+            final json = jsonDecode(data);
+            if (json['type'] == 'content_block_delta') {
+              final text = json['delta']?['text'] as String?;
+              if (text != null) yield text;
+            }
+          } catch (_) {}
+        }
       }
+    } catch (e) {
+      throw Exception('Anthropic API error: $e');
     }
   }
 
-  // ── Anthropic ─────────────────────────────────────────────────────────────
+  Stream<String> _streamGemini(List<ChatMessage> messages) async* {
+    try {
+      final prompt = messages.map((m) {
+        final role = m.role == MessageRole.user ? 'user' : 'model';
+        return {'role': role, 'parts': [{'text': m.content}]};
+      }).toList();
 
-  Stream<String> _anthropicStream(List<ChatMessage> history) async* {
-    const url = 'https://api.anthropic.com/v1/messages';
-    final messages =
-        history.map((m) => {'role': m.role.name, 'content': m.content}).toList();
+      final response = await _dio.post(
+        '${AIProvider.gemini.baseUrl}/models/${_settings.selectedModel}:streamGenerateContent?key=${_settings.apiKey}',
+        options: Options(responseType: ResponseType.stream),
+        data: {'contents': prompt},
+      );
 
-    final response = await _dio.post<ResponseBody>(
-      url,
-      data: jsonEncode({
-        'model': model,
-        'max_tokens': 4096,
-        'system': _systemPrompt,
-        'messages': messages,
-        'stream': true,
-      }),
-      options: Options(responseType: ResponseType.stream),
-    );
-
-    final stream = response.data!.stream
-        .transform(const Utf8Decoder())
-        .transform(const LineSplitter());
-
-    await for (final line in stream) {
-      if (line.startsWith('data: ')) {
-        final data = line.substring(6).trim();
+      final stream = response.data.stream as Stream<List<int>>;
+      final buffer = StringBuffer();
+      await for (final chunk in stream.transform(const Utf8Decoder())) {
+        buffer.write(chunk);
         try {
-          final json = jsonDecode(data);
-          if (json['type'] == 'content_block_delta') {
-            final text = json['delta']?['text'];
-            if (text != null && text is String) yield text;
+          final json = jsonDecode(buffer.toString());
+          final text = json['candidates']?[0]?['content']?['parts']?[0]?['text'] as String?;
+          if (text != null) {
+            yield text;
+            buffer.clear();
           }
         } catch (_) {}
       }
+    } catch (e) {
+      throw Exception('Gemini API error: $e');
     }
   }
 
-  // ── Gemini ────────────────────────────────────────────────────────────────
+  Stream<String> _streamOllama(List<ChatMessage> messages) async* {
+    try {
+      final response = await _dio.post(
+        '${_settings.ollamaHost}/api/chat',
+        options: Options(responseType: ResponseType.stream),
+        data: {
+          'model': _settings.selectedModel,
+          'messages': messages.map((m) => m.toApiMap()).toList(),
+          'stream': true,
+        },
+      );
 
-  Stream<String> _geminiStream(List<ChatMessage> history) async* {
-    final url =
-        '${provider.baseUrl}/models/$model:streamGenerateContent?key=$apiKey';
-    final contents = history
-        .map((m) => {
-              'role': m.role == MessageRole.user ? 'user' : 'model',
-              'parts': [
-                {'text': m.content}
-              ]
-            })
-        .toList();
-
-    final response = await _dio.post<ResponseBody>(
-      url,
-      data: jsonEncode({'contents': contents}),
-      options: Options(responseType: ResponseType.stream),
-    );
-
-    String buffer = '';
-    final stream =
-        response.data!.stream.transform(const Utf8Decoder());
-
-    await for (final chunk in stream) {
-      buffer += chunk;
-      try {
-        final json = jsonDecode(buffer);
-        final text =
-            json['candidates']?[0]?['content']?['parts']?[0]?['text'];
-        if (text is String) {
-          yield text;
-          buffer = '';
-        }
-      } catch (_) {}
+      final stream = response.data.stream as Stream<List<int>>;
+      await for (final chunk in stream.transform(const Utf8Decoder()).transform(const LineSplitter())) {
+        if (chunk.trim().isEmpty) continue;
+        try {
+          final json = jsonDecode(chunk);
+          final text = json['message']?['content'] as String?;
+          if (text != null) yield text;
+          if (json['done'] == true) break;
+        } catch (_) {}
+      }
+    } catch (e) {
+      throw Exception('Ollama API error: $e');
     }
-  }
-
-  // ── Ollama (local) ────────────────────────────────────────────────────────
-
-  Stream<String> _ollamaStream(List<ChatMessage> history) async* {
-    const url = 'http://localhost:11434/api/chat';
-    final messages = [
-      {'role': 'system', 'content': _systemPrompt},
-      ...history.map((m) => {'role': m.role.name, 'content': m.content}),
-    ];
-
-    final response = await _dio.post<ResponseBody>(
-      url,
-      data: jsonEncode({'model': model, 'messages': messages, 'stream': true}),
-      options: Options(responseType: ResponseType.stream),
-    );
-
-    final stream = response.data!.stream
-        .transform(const Utf8Decoder())
-        .transform(const LineSplitter());
-
-    await for (final line in stream) {
-      try {
-        final json = jsonDecode(line);
-        final content = json['message']?['content'];
-        if (content is String) yield content;
-      } catch (_) {}
-    }
-  }
-
-  // ── Error Handling ────────────────────────────────────────────────────────
-
-  String _parseDioError(DioException e) {
-    if (e.response != null) {
-      try {
-        final body = e.response!.data;
-        if (body is Map) {
-          return body['error']?['message'] ??
-              body['message'] ??
-              'API Error ${e.response!.statusCode}';
-        }
-      } catch (_) {}
-      return 'API Error: ${e.response!.statusCode}';
-    }
-    if (e.type == DioExceptionType.connectionTimeout) {
-      return 'Connection timeout. Check your internet.';
-    }
-    return e.message ?? 'Unknown network error';
   }
 }
 
-class APIException implements Exception {
-  final String message;
-  const APIException(this.message);
-
-  @override
-  String toString() => 'APIException: $message';
-}
-
-// ─── Provider ─────────────────────────────────────────────────────────────────
-
-final apiServiceProvider = Provider<APIService?>((ref) {
+final apiServiceProvider = Provider<ApiService>((ref) {
   final settings = ref.watch(settingsProvider);
-  if (settings.apiKey.isEmpty) return null;
-  return APIService(
-    apiKey: settings.apiKey,
-    model: settings.selectedModel,
-    provider: settings.provider,
-  );
+  return ApiService(settings);
 });

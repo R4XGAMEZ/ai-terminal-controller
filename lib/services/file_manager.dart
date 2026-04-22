@@ -9,8 +9,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:android_intent_plus/android_intent.dart';
 import 'package:android_intent_plus/flag.dart';
 
-// ─── Workspace Model ──────────────────────────────────────────────────────────
-
 class WorkspaceInfo {
   final String path;
   final String name;
@@ -38,8 +36,6 @@ class WorkspaceInfo {
         fileCount: json['fileCount'] ?? 0,
       );
 }
-
-// ─── File Tree Node ───────────────────────────────────────────────────────────
 
 class FileNode {
   final String name;
@@ -87,8 +83,6 @@ class FileNode {
     }
   }
 }
-
-// ─── File Manager Service ─────────────────────────────────────────────────────
 
 class FileManagerService {
   static const _workspacePrefKey = 'last_workspace';
@@ -246,9 +240,7 @@ class FileManagerService {
   Future<void> runInTermux(String command, {String? workingDir}) async {
     if (!Platform.isAndroid) throw Exception('Termux only works on Android');
     try {
-      final fullCommand = workingDir != null
-          ? 'cd "$workingDir" && $command'
-          : command;
+      final fullCommand = workingDir != null ? 'cd "$workingDir" && $command' : command;
       final intent = AndroidIntent(
         action: 'android.intent.action.VIEW',
         package: 'com.termux',
@@ -305,8 +297,6 @@ class FileManagerService {
   String getTermuxHomePath() => '/data/data/com.termux/files/home';
   String getTermuxBinPath() => '/data/data/com.termux/files/usr/bin';
 }
-
-// ─── Providers ────────────────────────────────────────────────────────────────
 
 final fileManagerProvider = Provider<FileManagerService>((ref) {
   return FileManagerService();
